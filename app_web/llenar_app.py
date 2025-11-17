@@ -97,7 +97,7 @@ def insert_historial_acceso(conn, id_usuario, accion_realizada, ip_usuario, nave
     conn.commit()
 
 
-st.title("Llenar Base de Datos")
+st.title("App Tecnoplus UNITEC IYP")
 
 db_path = get_db_path()
 conn = sqlite3.connect(db_path)
