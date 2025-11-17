@@ -1,12 +1,14 @@
 import os
 import subprocess
 import sys
-
+from app_web.sql_init import inicializar_db
 
 def main() -> None:
+
+    
     file_path = os.path.dirname(os.path.abspath(__file__))
     streamlit_path = os.path.join(file_path, "concept_filing.py")
-
+    inicializar_db(file_path)
     try:
         subprocess.run(
             [sys.executable, "-m", "streamlit", "run", streamlit_path],
