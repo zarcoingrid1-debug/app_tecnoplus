@@ -8,8 +8,9 @@ def main() -> None:
     streamlit_path = os.path.join(file_path, "app_web", "llenar_app.py")
     inicializar_db(file_path)
     try:
+        port = os.environ.get("PORT", "8501")
         subprocess.run(
-            [sys.executable, "-m", "streamlit", "run", streamlit_path],
+            [sys.executable, "-m", "streamlit", "run", streamlit_path, "--server.port", port, "--server.headless", "true", "--server.runOnSave", "false"],
             check=True,
         )
     except Exception as e:
