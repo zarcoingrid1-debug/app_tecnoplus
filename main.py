@@ -7,7 +7,7 @@ def main() -> None:
 
     
     file_path = os.path.dirname(os.path.abspath(__file__))
-    streamlit_path = os.path.join(file_path, "concept_filing.py")
+    streamlit_path = os.path.join(file_path, "app_web", "llenar_app.py")
     inicializar_db(file_path)
     try:
         subprocess.run(
