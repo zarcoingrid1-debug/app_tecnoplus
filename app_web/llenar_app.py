@@ -275,6 +275,177 @@ def administracion_productos():
     
     conn.close()
 
+def generacion_pedido():
+    import streamlit as st
+    import pandas as pd
+    import sqlite3
+    from datetime import datetime
+    import uuid
+
+    st.header("🛒 Generación de Pedido")
+
+    db_path = get_db_path()  # asumes que ya existe en tu app
+    conn = sqlite3.connect(db_path, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    try:
+        # Cargar usuarios
+        users_df = pd.read_sql_query("SELECT id_usuario, nombre FROM Usuarios ORDER BY nombre;", conn)
+        if users_df.empty:
+            st.warning("No hay usuarios registrados. Ve a 'Administración de usuarios' primero.")
+            conn.close()
+            return
+
+        user_map = {row["nombre"]: int(row["id_usuario"]) for _, row in users_df.iterrows()}
+        usuario_seleccionado_nombre = st.selectbox("Selecciona usuario:", list(user_map.keys()))
+        id_usuario = user_map[usuario_seleccionado_nombre]
+
+        st.markdown("---")
+        st.subheader("Productos disponibles")
+        productos_df = pd.read_sql_query(
+            "SELECT id_producto, nombre, descripcion, precio, stock FROM Productos WHERE estado=1 ORDER BY nombre;",
+            conn
+        )
+        if productos_df.empty:
+            st.info("No hay productos activos.")
+        else:
+            st.dataframe(productos_df[["id_producto", "nombre", "precio", "stock"]], use_container_width=True)
+
+            # Agregar al carrito: elegir producto y cantidad
+            col1, col2, col3 = st.columns([4,1,1])
+            with col1:
+                opciones_prod = {f"{r['nombre']} (stock:{int(r['stock'])})": int(r['id_producto']) for _, r in productos_df.iterrows()}
+                seleccion_prod_display = st.selectbox("Seleccionar producto a agregar:", ["---"] + list(opciones_prod.keys()))
+            with col2:
+                cantidad = st.number_input("Cantidad", min_value=1, step=1, value=1)
+            with col3:
+                if st.button("➕ Agregar al carrito"):
+                    if seleccion_prod_display == "---":
+                        st.error("Selecciona un producto válido.")
+                    else:
+                        id_producto = opciones_prod[seleccion_prod_display]
+                        # comprobar stock
+                        cur.execute("SELECT stock, nombre FROM Productos WHERE id_producto = ?;", (id_producto,))
+                        prod_row = cur.fetchone()
+                        if not prod_row:
+                            st.error("Producto no encontrado.")
+                        else:
+                            stock = int(prod_row["stock"])
+                            nombre_prod = prod_row["nombre"]
+                            if cantidad > stock:
+                                st.error(f"No hay stock suficiente para '{nombre_prod}' (stock={stock}).")
+                            else:
+                                # insertar o actualizar en Carrito (si existe, actualizamos la cantidad sumando)
+                                # Primero revisar si ya existe fila para ese usuario/producto
+                                cur.execute("SELECT id_carrito, cantidad FROM Carrito WHERE id_usuario = ? AND id_producto = ?;",
+                                            (id_usuario, id_producto))
+                                existing = cur.fetchone()
+                                if existing:
+                                    nueva_cant = int(existing["cantidad"]) + int(cantidad)
+                                    if nueva_cant > stock:
+                                        st.error(f"No puedes tener más de {stock} unidades de '{nombre_prod}' en carrito.")
+                                    else:
+                                        cur.execute("UPDATE Carrito SET cantidad = ?, fecha_agregado = DATETIME('now') WHERE id_carrito = ?;",
+                                                    (nueva_cant, existing["id_carrito"]))
+                                        conn.commit()
+                                        st.success(f"Cantidad actualizada en carrito: {nueva_cant} de '{nombre_prod}'.")
+                                else:
+                                    cur.execute("INSERT INTO Carrito (id_usuario, id_producto, cantidad, fecha_agregado) VALUES (?, ?, ?, DATETIME('now'));",
+                                                (id_usuario, id_producto, int(cantidad)))
+                                    conn.commit()
+                                    st.success(f"'{nombre_prod}' agregado al carrito ({cantidad}).")
+
+        st.markdown("---")
+        st.subheader("Carrito")
+        carrito_df = pd.read_sql_query(
+            "SELECT c.id_carrito, c.id_producto, p.nombre, p.precio, c.cantidad, p.stock "
+            "FROM Carrito c JOIN Productos p ON c.id_producto = p.id_producto "
+            "WHERE c.id_usuario = ? ORDER BY c.fecha_agregado;",
+            conn, params=(id_usuario,)
+        )
+
+        if carrito_df.empty:
+            st.info("El carrito está vacío.")
+        else:
+            # Mostrar items y permitir edición/eliminación
+            st.write("Edita cantidades y pulsa 'Actualizar' o elimina elementos individualmente.")
+            cambios = {}
+            for idx, r in carrito_df.iterrows():
+                id_carrito = int(r["id_carrito"])
+                nombre = r["nombre"]
+                precio = float(r["precio"])
+                cantidad_actual = int(r["cantidad"])
+                stock = int(r["stock"])
+
+                cols = st.columns([4,1,1])
+                cols[0].markdown(f"**{nombre}** — ${precio:.2f} — stock: {stock}")
+                nueva_q = cols[1].number_input("Cantidad", min_value=0, max_value=stock, value=cantidad_actual, key=f"qty_{id_carrito}")
+                if nueva_q != cantidad_actual:
+                    cambios[id_carrito] = int(nueva_q)
+                if cols[2].button("Eliminar", key=f"del_{id_carrito}"):
+                    cur.execute("DELETE FROM Carrito WHERE id_carrito = ?;", (id_carrito,))
+                    conn.commit()
+                    st.experimental_rerun()
+
+            if cambios:
+                if st.button("Actualizar carrito"):
+                    for id_carrito, q in cambios.items():
+                        if q <= 0:
+                            cur.execute("DELETE FROM Carrito WHERE id_carrito = ?;", (id_carrito,))
+                        else:
+                            # obtener id_producto y stock para validar
+                            cur.execute("SELECT id_producto FROM Carrito WHERE id_carrito = ?;", (id_carrito,))
+                            r = cur.fetchone()
+                            if r:
+                                id_prod = r["id_producto"]
+                                cur.execute("SELECT stock FROM Productos WHERE id_producto = ?;", (id_prod,))
+                                stock_r = cur.fetchone()
+                                if stock_r and q > int(stock_r["stock"]):
+                                    st.error(f"No hay stock suficiente para el producto (id {id_prod}). Se saltó actualización.")
+                                else:
+                                    cur.execute("UPDATE Carrito SET cantidad = ?, fecha_agregado = DATETIME('now') WHERE id_carrito = ?;", (q, id_carrito))
+                    conn.commit()
+                    st.success("Carrito actualizado.")
+                    st.experimental_rerun()
+
+            # Resumen y pago
+            carrito_df["subtotal"] = carrito_df["precio"] * carrito_df["cantidad"]
+            total = carrito_df["subtotal"].sum()
+            st.markdown("---")
+            st.write("### Resumen del carrito")
+            st.dataframe(carrito_df[["nombre", "precio", "cantidad", "subtotal"]].rename(columns={
+                "nombre":"Producto","precio":"Precio","cantidad":"Cantidad","subtotal":"Subtotal"
+            }), use_container_width=True)
+            st.markdown(f"**Total a pagar:** ${total:.2f}")
+
+            metodo = st.radio("Método de pago:", ("tarjeta", "transferencia", "efectivo", "paypal"))
+            marcar_aprobado = metodo in ("tarjeta", "paypal")  # lógica simple: tarjeta/paypal aprobados al instante
+
+            if st.button("💳 Pagar ahora"):
+                try:
+                    res = generar_pago_desde_carrito(id_usuario, metodo)
+                    st.success(f"Pago registrado (id_pago={res['id_pago']}) — estado: {res['estado_pago']} — referencia: {res['referencia']}")
+                    st.write(f"- Monto: ${res['total']:.2f}")
+                    st.experimental_rerun()
+                except Exception as e:
+                    st.error(f"Error al procesar el pago: {e}")
+
+    except Exception as e_main:
+        st.error(f"Error inesperado: {e_main}")
+    finally:
+        conn.close()
+
+
+st.title("Administración de la Base de Datos")
+vista = st.sidebar.selectbox("Seleccionar Vista", ["Administración de usuarios", "Administración de productos", "Generación de pedido"])
+
+if vista == "Administración de usuarios":
+    administracion_usuarios()
+elif vista == "Administración de productos":
+    administracion_productos()
+elif vista == "Generación de pedido":
+    generacion_pedido()
 st.title("Administración de la Base de Datos")
 vista = st.sidebar.selectbox("Seleccionar Vista", ["Administración de usuarios", "Administración de productos"])
 
